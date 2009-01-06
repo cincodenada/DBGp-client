@@ -28,6 +28,8 @@
 # Authors:
 #    Seung Woo Shin <segv <at> sayclub.com>
 #    Sam Ghods <sam <at> box.net>
+# Contributors:
+#    Hadi Zeftin <slack.dna <at> gmail.com>
 
 """
 	debugger.py -- DBGp client: a remote debugger interface to DBGp protocol
@@ -129,25 +131,27 @@ import xml.dom.minidom
 
 class VimWindow:
   """ wrapper class of window of vim """
-  def __init__(self, name = 'DEBUG_WINDOW'):
+  def __init__(self, owner, name = 'DEBUG_WINDOW'):
     """ initialize """
     self.name       = name
     self.buffer     = None
     self.firstwrite = 1
+    self.owner = owner
+
   def isprepared(self):
     """ check window is OK """
     if self.buffer == None or len(dir(self.buffer)) == 0 or self.getwinnr() == -1:
       return 0
     return 1
   def prepare(self):
-    """ check window is OK, if not then create """
+    """ check window is OK (switch to working tab first), if not then create """
+    self.owner.switch_working_tab()
     if not self.isprepared():
       self.create()
   def on_create(self):
     pass
   def getwinnr(self):
     return int(vim.eval("bufwinnr('"+self.name+"')"))
-
   def xml_on_element(self, node):
     line = str(node.nodeName)
     if node.hasAttributes():
@@ -279,8 +283,8 @@ class VimWindow:
     self.write(self.xml_stringfy_childs(xml))
 
 class StackWindow(VimWindow):
-  def __init__(self, name = 'STACK_WINDOW'):
-    VimWindow.__init__(self, name)
+  def __init__(self, owner, name = 'STACK_WINDOW'):
+    VimWindow.__init__(self, owner, name)
   def xml_on_element(self, node):
     if node.nodeName != 'stack':
       return VimWindow.xml_on_element(self, node)
@@ -302,15 +306,15 @@ class StackWindow(VimWindow):
     self.command('syntax region CurStack start="^' +str(no)+ ' " end="$"')
 
 class LogWindow(VimWindow):
-  def __init__(self, name = 'LOG___WINDOW'):
-    VimWindow.__init__(self, name)
+  def __init__(self, owner, name = 'LOG___WINDOW'):
+    VimWindow.__init__(self, owner, name)
   def on_create(self):
     self.command('set nowrap fdm=marker fmr={{{,}}} fdl=0')
-    self.write('asdfasdf')
+    #self.write('asdfasdf')  what's this for ?
 
 class TraceWindow(VimWindow):
-  def __init__(self, name = 'TRACE_WINDOW'):
-    VimWindow.__init__(self, name)
+  def __init__(self, owner, name = 'TRACE_WINDOW'):
+    VimWindow.__init__(self, owner, name)
   def xml_on_element(self, node):
     if node.nodeName != 'error':
       return VimWindow.xml_on_element(self, node)
@@ -323,8 +327,8 @@ class TraceWindow(VimWindow):
     self.command('set nowrap fdm=marker fmr={{{,}}} fdl=0')
 
 class WatchWindow(VimWindow):
-  def __init__(self, name = 'WATCH_WINDOW'):
-    VimWindow.__init__(self, name)
+  def __init__(self, owner, name = 'WATCH_WINDOW'):
+    VimWindow.__init__(self, owner, name)
   def fixup_single(self, line, node, level):
     return ''.ljust(level*1) + line + '\n'
   def fixup_childs(self, line, node, level):
@@ -408,8 +412,8 @@ class WatchWindow(VimWindow):
       return ('none', '')
 
 class HelpWindow(VimWindow):
-  def __init__(self, name = 'HELP__WINDOW'):
-    VimWindow.__init__(self, name)
+  def __init__(self, owner, name = 'HELP__WINDOW'):
+    VimWindow.__init__(self, owner, name)
   def on_create(self):
     self.write(                                                          \
         '[ Function Keys ]                 |                       \n' + \
@@ -429,10 +433,10 @@ class DebugUI:
   """ DEBUGUI class """
   def __init__(self, minibufexpl = 0):
     """ initialize object """
-    self.watchwin = WatchWindow()
-    self.stackwin = StackWindow()
-    self.tracewin = TraceWindow()
-    self.helpwin  = HelpWindow('HELP__WINDOW')
+    self.watchwin = WatchWindow(self)
+    self.stackwin = StackWindow(self)
+    self.tracewin = TraceWindow(self)
+    self.helpwin  = HelpWindow(self, 'HELP__WINDOW')
     self.mode     = 0 # normal mode
     self.file     = None
     self.line     = None
@@ -440,6 +444,13 @@ class DebugUI:
     self.cursign  = None
     self.sessfile = "/tmp/debugger_vim_saved_session." + str(os.getpid())
     self.minibufexpl = minibufexpl
+    self.tabnumber = 1
+    self.usesessiontab = 0
+    self.usetab = 0
+
+  def switch_working_tab(self):
+    if self.usetab == 1 and vim.eval('tabpagenr()') != self.tabnumber:
+      vim.command('tabn ' + self.tabnumber)
 
   def debug_mode(self):
     """ change mode to debug """
@@ -448,6 +459,14 @@ class DebugUI:
     self.mode = 1
     if self.minibufexpl == 1:
       vim.command('CMiniBufExplorer')         # close minibufexplorer if it is open
+    
+    if vim.eval("tabpagenr('$')") > 1:
+      self.usetab = 1
+      self.tabnumber = vim.eval('tabpagenr()')    # save current tab-page number
+      if vim.eval('&sessionoptions').find('tabpages') != -1:
+        self.usesessiontab = 1
+        vim.command('set sessionoptions-=tabpages') # if there are tabpages in sessionoptions, remove it
+                                                    # so the tab-pages wont be doubled next-time we sourced it:
     # save session
     vim.command('mksession! ' + self.sessfile)
     for i in range(1, len(vim.windows)+1):
@@ -476,9 +495,16 @@ class DebugUI:
     # destory all created windows
     self.destroy()
 
+    # go to the initial tab
+    self.switch_working_tab()
+
     # restore session
     vim.command('source ' + self.sessfile)
     os.system('rm -f ' + self.sessfile)
+
+    # restore sessionoptions
+    if self.usesessiontab == 1:
+      vim.command('set sessionoptions+=tabpages')
 
     self.set_highlight()
 
