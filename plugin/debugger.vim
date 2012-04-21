@@ -1,8 +1,8 @@
-" DBGp client: a remote debugger interface to the DBGp protocol
+" DBGp X client: a real remote debugger interface to the DBGp protocol
 "
 " Script Info and Documentation  {{{
 "=============================================================================
-"    Copyright: Copyright (C) 2007 Sam Ghods
+"    Copyright: Copyright (C) 2012 Chivan
 "      License:	The MIT License
 "				
 "				Permission is hereby granted, free of charge, to any person obtaining
@@ -25,13 +25,12 @@
 "				SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 " Name Of File: debugger.vim, debugger.py
 "  Description: remote debugger interface to DBGp protocol
-"   Maintainer: Sam Ghods <sam <at> box.net>
-"  Last Change: June 18, 2007
-"          URL: http://www.vim.org/scripts/script.php?script_id=1929
-"      Version: 1.1.1
-"               Originally written by Seung Woo Shin <segv <at> sayclub.com>
+"   Maintainer: Chivan <isokay <at> gmail.com>
+"  Last Change: April 20, 2012
+"      Version: 2.0.1
+"               Originally written by Sam Ghods <sam <at> box.net> and Seung Woo Shin <segv <at> sayclub.com>
 "               The original script is located at:
-"				http://www.vim.org/scripts/script.php?script_id=1152
+"               http://www.vim.org/scripts/script.php?script_id=1929
 "        Usage: N.B.: For a complete tutorial on how to setup this script,
 "               please visit:
 "               http://tech.blog.box.net/2007/06/20/how-to-debug-php-with-vim-and-xdebug-on-linux/
@@ -44,10 +43,31 @@
 "               on port 9000. You can change this with the g:debuggerPort
 "               variable by putting the following line your vimrc:
 "
-"                 let g:debuggerPort = 10001
+"                 let g:debuggerPort = 9000
 "
 "               where 10001 is the new port number you want the server to
 "               connect to.
+"
+"               if you would like to set the value of socket timeout(s),
+"               putting the following line:
+"
+"                 let g:debuggerWait = 8
+"
+"               If you are debugging on two machines, and the path of your
+"               project is different between local host and remote host,
+"               you should set the path maps in your vimrc like this:
+"
+"              let g:debuggerPath = {'sep': ['/', '/'], 'map': [
+"                          \['/local/path/to/project1', '/remote/path/to/project/1'],
+"                          \['/local/path/to/project2', '/remote/path/to/project/2'],
+"                          \['/local/path/to/project3', '/remote/path/to/project/3'],
+"                          \]}
+"
+"               The key "sep" means the path separator of os,
+"               On unix and Mac, is "/", On Windows, it is "\".
+"               As you can see, the first element in sep list is the local path
+"               separator, the second element in sep list is the remote path
+"               separator.
 "
 "               There are three maximum limits you can set referring to the
 "               properties (variables) returned by the debugging engine.
@@ -79,7 +99,9 @@
 "
 "                 let g:debuggerMiniBufExpl = 1
 "
-"      History: 1.1.1 o Added a check so the script doesn't load if python is
+"      History: 2.0.1 o Added the path mapping feature and some other
+"                     changes.
+"               1.1.1 o Added a check so the script doesn't load if python is
 "                     not compiled in. (Contributed by Lars Becker.)
 "               1.1   o Added vim variable to change port.
 "                     o You can now put debugger.py in either runtime directory
@@ -127,11 +149,6 @@ else
   call confirm('debugger.vim: Unable to find debugger.py. Place it in either your home vim directory or in the Vim runtime directory.', 'OK')
 endif
 
-map <F1> :python debugger_resize()<cr>
-map <F2> :python debugger_command('step_into')<cr>
-map <F3> :python debugger_command('step_over')<cr>
-map <F4> :python debugger_command('step_out')<cr>
-
 map <Leader>dr :python debugger_resize()<cr>
 map <Leader>di :python debugger_command('step_into')<cr>
 map <Leader>do :python debugger_command('step_over')<cr>
@@ -139,13 +156,15 @@ map <Leader>dt :python debugger_command('step_out')<cr>
 
 nnoremap ,e :python debugger_watch_input("eval")<cr>A
 
+map <F1> :python debugger_resize()<cr>
+map <F2> :python debugger_command('step_into')<cr>
+map <F3> :python debugger_command('step_over')<cr>
+map <F4> :python debugger_command('step_out')<cr>
+
+map <S-F5> :python debugger_quit()<cr>
 map <F5> :python debugger_run()<cr>
-map <F6> :python debugger_quit()<cr>
 
-map <F7> :python debugger_command('step_into')<cr>
-map <F8> :python debugger_command('step_over')<cr>
-map <F9> :python debugger_command('step_out')<cr>
-
+map <F10> :python debugger_watch_input("eval", '<cword>')<cr>A<cr>
 map <F11> :python debugger_context()<cr>
 map <F12> :python debugger_property()<cr>
 map <F11> :python debugger_watch_input("context_get")<cr>A<cr>
@@ -160,6 +179,12 @@ command! -nargs=0 Dn python debugger_down()
 sign define current text=->  texthl=DbgCurrent linehl=DbgCurrent
 sign define breakpt text=B>  texthl=DbgBreakPt linehl=DbgBreakPt
 
+if !exists('g:debuggerPath')
+  let g:debuggerPath = {'sep':['/', '/'], 'map':[]}
+endif 
+if !exists('g:debuggerWait')
+  let g:debuggerWait = 8
+endif 
 if !exists('g:debuggerPort')
   let g:debuggerPort = 9000
 endif 
@@ -170,9 +195,9 @@ if !exists('g:debuggerMaxData')
   let g:debuggerMaxData = 1024
 endif
 if !exists('g:debuggerMaxDepth')
-  let g:debuggerMaxDepth = 1
+  let g:debuggerMaxDepth = 30
 endif
 if !exists('g:debuggerMiniBufExpl')
-  let g:debuggerMiniBufExpl = 0
+  let g:debuggerMiniBufExpl = 1
 endif
 python debugger_init(1)
