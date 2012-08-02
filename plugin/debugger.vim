@@ -4,7 +4,7 @@
 "=============================================================================
 "    Copyright: Copyright (C) 2007 Sam Ghods
 "      License:	The MIT License
-"				
+"
 "				Permission is hereby granted, free of charge, to any person obtaining
 "				a copy of this software and associated documentation files
 "				(the "Software"), to deal in the Software without restriction,
@@ -12,10 +12,10 @@
 "				merge, publish, distribute, sublicense, and/or sell copies of the
 "				Software, and to permit persons to whom the Software is furnished
 "				to do so, subject to the following conditions:
-"				
+"
 "				The above copyright notice and this permission notice shall be included
 "				in all copies or substantial portions of the Software.
-"				
+"
 "				THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 "				OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
 "				MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
@@ -39,7 +39,7 @@
 "
 "               This file should reside in the plugins directory along
 "               with debugger.py and be automatically sourced.
-"               
+"
 "               By default, the script expects the debugging engine to connect
 "               on port 9000. You can change this with the g:debuggerPort
 "               variable by putting the following line your vimrc:
@@ -91,7 +91,7 @@
 "                     o Added support for minibufexpl.vim.
 "                     o License added.
 "               1.0   o Initial release on December 7, 2004
-"      
+"
 " Known Issues: The code is designed for the DBGp protocol, but it has only been
 " 				tested with XDebug 2.0RC4. If anyone would like to contribute patches
 " 				to get it working with other DBGp software, I would be happy
@@ -102,7 +102,7 @@
 " 				so on... if you can actually find a set of solidly
 " 				reproducible steps that lead to a bug, please do e-mail <sam
 " 				<at> box.net> and I will take a look.
-" 
+"
 "         Todo: Compatibility for other DBGp engines.
 "
 "         		Add a status line/window which constantly shows what the current
@@ -124,10 +124,17 @@ if filereadable($VIMRUNTIME."/plugin/debugger.py")
 elseif filereadable($HOME."/.vim/plugin/debugger.py")
   pyfile $HOME/.vim/plugin/debugger.py
 else
-  call confirm('debugger.vim: Unable to find debugger.py. Place it in either your home vim directory or in the Vim runtime directory.', 'OK')
+  " when we use pathogen for instance
+  let $CUR_DIRECTORY=expand("<sfile>:p:h")
+
+  if filereadable($CUR_DIRECTORY."/debugger.py")
+    pyfile $CUR_DIRECTORY/debugger.py
+  else
+    call confirm('debugger.vim: Unable to find debugger.py. Place it in either your home vim directory or in the Vim runtime directory.', 'OK')
+  endif
 endif
 
-map <F1> :python debugger_resize()<cr>
+map <F1> :python debugger_mark()<cr>
 map <F2> :python debugger_command('step_into')<cr>
 map <F3> :python debugger_command('step_over')<cr>
 map <F4> :python debugger_command('step_out')<cr>
@@ -137,24 +144,23 @@ map <Leader>di :python debugger_command('step_into')<cr>
 map <Leader>do :python debugger_command('step_over')<cr>
 map <Leader>dt :python debugger_command('step_out')<cr>
 
-nnoremap ,e :python debugger_watch_input("eval")<cr>A
+nnoremap <Leader>e :python debugger_watch_input("eval")<cr>A
+vnoremap <Leader>e :python debugger_visual_eval()<cr>A
 
 map <F5> :python debugger_run()<cr>
 map <F6> :python debugger_quit()<cr>
 
-map <F7> :python debugger_command('step_into')<cr>
-map <F8> :python debugger_command('step_over')<cr>
-map <F9> :python debugger_command('step_out')<cr>
-
+map <F10> :python debugger_globals()<cr>
 map <F11> :python debugger_context()<cr>
 map <F12> :python debugger_property()<cr>
-map <F11> :python debugger_watch_input("context_get")<cr>A<cr>
-map <F12> :python debugger_watch_input("property_get", '<cword>')<cr>A<cr>
 
 hi DbgCurrent term=reverse ctermfg=White ctermbg=Red gui=reverse
 hi DbgBreakPt term=reverse ctermfg=White ctermbg=Green gui=reverse
 
 command! -nargs=? Bp python debugger_mark('<args>')
+command! -nargs=? BpRm python debugger_remove_breakpoint('<args>')
+command! -nargs=? BpLs python debugger_list_breakpoints()
+command! -nargs=1 DebugDepth python debugger_set_depth('<args>')
 command! -nargs=0 Up python debugger_up()
 command! -nargs=0 Dn python debugger_down()
 sign define current text=->  texthl=DbgCurrent linehl=DbgCurrent
@@ -162,12 +168,12 @@ sign define breakpt text=B>  texthl=DbgBreakPt linehl=DbgBreakPt
 
 if !exists('g:debuggerPort')
   let g:debuggerPort = 9000
-endif 
+endif
 if !exists('g:debuggerMaxChildren')
-  let g:debuggerMaxChildren = 32
+  let g:debuggerMaxChildren = 64
 endif
 if !exists('g:debuggerMaxData')
-  let g:debuggerMaxData = 1024
+  let g:debuggerMaxData = 2048
 endif
 if !exists('g:debuggerMaxDepth')
   let g:debuggerMaxDepth = 1
@@ -175,4 +181,19 @@ endif
 if !exists('g:debuggerMiniBufExpl')
   let g:debuggerMiniBufExpl = 0
 endif
-python debugger_init(1)
+if !exists('g:debuggerAutoContext')
+  let g:debuggerAutoContext = 1
+endif
+if !exists('g:debuggerDebugMode')
+  let g:debuggerDebugMode = 0
+endif
+python debugger_init()
+
+function! xdebug:get_visual_selection()
+  let [lnum1, col1] = getpos("'<")[1:2]
+  let [lnum2, col2] = getpos("'>")[1:2]
+  let lines = getline(lnum1, lnum2)
+  let lines[-1] = lines[-1][: col2 - 1]
+  let lines[0] = lines[0][col1 - 1:]
+  return join(lines, "\n")
+endfunction

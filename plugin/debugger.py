@@ -1,50 +1,4 @@
 # -*- c--oding: ko_KR.UTF-8 -*-
-# remote PHP debugger : remote debugger interface to DBGp protocol
-#
-# Copyright (c) 2003-2006 ActiveState Software Inc.
-#
-# The MIT License
-#
-# Permission is hereby granted, free of charge, to any person obtaining
-# a copy of this software and associated documentation files
-# (the "Software"), to deal in the Software without restriction,
-# including without limitation the rights to use, copy, modify,
-# merge, publish, distribute, sublicense, and/or sell copies of the
-# Software, and to permit persons to whom the Software is furnished
-# to do so, subject to the following conditions:
-#
-# The above copyright notice and this permission notice shall be included
-# in all copies or substantial portions of the Software.
-#
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
-# OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
-# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
-# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-#
-#
-# Authors:
-#    Seung Woo Shin <segv <at> sayclub.com>
-#    Sam Ghods <sam <at> box.net>
-
-"""
-	debugger.py -- DBGp client: a remote debugger interface to DBGp protocol
-
-    Usage:
-        Use with the debugger.vim vim plugin
-
-    This debugger is designed to be used with debugger.vim,
-	a vim plugin which provides a full debugging environment
-	right inside vim.
-
-	CHECK DEBUGGER.VIM FOR THE FULL DOCUMENTATION.
-
-    Example usage:
-        Place inside <source vim directory>/plugin/ along with
-		debugger.py.
-"""
 
 import os
 import sys
@@ -53,6 +7,8 @@ import socket
 import base64
 import traceback
 import xml.dom.minidom
+import re
+import unicodedata
 
 #######################################################################################################################
 #                                                                                                                     #
@@ -148,33 +104,35 @@ class VimWindow:
   def getwinnr(self):
     return int(vim.eval("bufwinnr('"+self.name+"')"))
 
-  def xml_on_element(self, node):
+  def xml_on_element(self, node,insert):
     line = str(node.nodeName)
     if node.hasAttributes():
       for (n,v) in node.attributes.items():
         line += str(' %s=%s' % (n,v))
     return line
-  def xml_on_attribute(self, node):
+  def xml_on_attribute(self, node,insert):
     return str(node.nodeName)
-  def xml_on_entity(self, node):
+  def xml_on_entity(self, node,insert):
     return 'entity node'
-  def xml_on_comment(self, node):
+  def xml_on_comment(self, node,insert):
     return 'comment node'
-  def xml_on_document(self, node):
+  def xml_on_document(self, node,insert):
     return '#document'
-  def xml_on_document_type(self, node):
+  def xml_on_document_type(self, node,insert):
     return 'document type node'
-  def xml_on_notation(self, node):
+  def xml_on_notation(self, node,insert):
     return 'notation node'
-  def xml_on_text(self, node):
+  def xml_on_text(self, node,insert):
     return node.data
-  def xml_on_processing_instruction(self, node):
+  def xml_on_processing_instruction(self, node,insert):
     return 'processing instruction'
-  def xml_on_cdata_section(self, node):
+  def xml_on_cdata_section(self, node,insert):
     return node.data
 
   def write(self, msg):
     """ append last """
+    if type(msg) is unicode:
+      msg = unicodedata.normalize('NFKD',msg).encode('ascii','ignore')
     self.prepare()
     if self.firstwrite == 1:
       self.firstwrite = 0
@@ -183,6 +141,26 @@ class VimWindow:
       self.buffer.append(str(msg).split('\n'))
     self.command('normal G')
     #self.window.cursor = (len(self.buffer), 1)
+  def insert(self, msg, lineno = None, overwrite = False, allowEmpty = False):
+    """ insert into current position in buffer"""
+    if len(msg) == 0 and allowEmpty == False:
+      return
+    self.prepare()
+    if self.firstwrite == 1:
+      self.firstwrite = 0
+      self.buffer[:] = str(msg).split('\n')
+    else:
+      if lineno == None:
+        (lineno, rol) = vim.current.window.cursor
+      remaining_buffer = str(msg).split('\n')
+      if overwrite:
+        lfrom = lineno + 1
+      else:
+        lfrom = lineno
+      remaining_buffer.extend(self.buffer[lfrom:])
+      del self.buffer[lineno:]
+      for line in remaining_buffer:
+        self.buffer.append(line)
   def create(self, method = 'new'):
     """ create window """
     vim.command('silent ' + method + ' ' + self.name)
@@ -214,76 +192,89 @@ class VimWindow:
       vim.command(str(winnr) + 'wincmd w')
     vim.command(cmd)
 
-  def _xml_stringfy(self, node, level = 0, encoding = None):
+  def _xml_stringfy(self, node, insert, level = 0, encoding = None):
     if node.nodeType   == node.ELEMENT_NODE:
-      line = self.xml_on_element(node)
-
+      line = self.xml_on_element(node,insert)
     elif node.nodeType == node.ATTRIBUTE_NODE:
-      line = self.xml_on_attribute(node)
+      line = self.xml_on_attribute(node,insert)
 
     elif node.nodeType == node.ENTITY_NODE:
-      line = self.xml_on_entity(node)
+      line = self.xml_on_entity(node,insert)
 
     elif node.nodeType == node.COMMENT_NODE:
-      line = self.xml_on_comment(node)
+      line = self.xml_on_comment(node,insert)
 
     elif node.nodeType == node.DOCUMENT_NODE:
-      line = self.xml_on_document(node)
+      line = self.xml_on_document(node,insert)
 
     elif node.nodeType == node.DOCUMENT_TYPE_NODE:
-      line = self.xml_on_document_type(node)
+      line = self.xml_on_document_type(node,insert)
 
     elif node.nodeType == node.NOTATION_NODE:
-      line = self.xml_on_notation(node)
+      line = self.xml_on_notation(node,insert)
 
     elif node.nodeType == node.PROCESSING_INSTRUCTION_NODE:
-      line = self.xml_on_processing_instruction(node)
+      line = self.xml_on_processing_instruction(node,insert)
 
     elif node.nodeType == node.CDATA_SECTION_NODE:
-      line = self.xml_on_cdata_section(node)
+      line = self.xml_on_cdata_section(node,insert)
 
     elif node.nodeType == node.TEXT_NODE:
-      line = self.xml_on_text(node)
+      line = self.xml_on_text(node,insert)
 
     else:
       line = 'unknown node type'
 
     if node.hasChildNodes():
-      #print ''.ljust(level*4) + '{{{' + str(level+1)
-      #print ''.ljust(level*4) + line
-      return self.fixup_childs(line, node, level)
-    else:
-      return self.fixup_single(line, node, level)
+      return self.fixup_childs(line, node, insert, level)
+    elif len(line) > 0:
+      return self.fixup_single(line, node, insert, level)
 
     return line
 
-  def fixup_childs(self, line, node, level):
+  def fixup_childs(self, line, node, insert, level):
     line = ''.ljust(level*4) + line +  '\n'
-    line += self.xml_stringfy_childs(node, level+1)
+    line += self.xml_stringfy_childs(node, insert, level+1)
     return line
-  def fixup_single(self, line, node, level):
+  def fixup_single(self, line, node, insert, level):
     return ''.ljust(level*4) + line + '\n'
 
-  def xml_stringfy(self, xml):
-    return self._xml_stringfy(xml)
-  def xml_stringfy_childs(self, node, level = 0):
+  def xml_stringfy(self, xml, insert = False):
+    return self._xml_stringfy(xml,insert)
+  def xml_stringfy_childs(self, node, insert = False, level = 0):
     line = ''
     for cnode in node.childNodes:
-      line = str(line)
-      line += str(self._xml_stringfy(cnode, level))
+      line += self._xml_stringfy(cnode, insert, level)
     return line
 
   def write_xml(self, xml):
     self.write(self.xml_stringfy(xml))
   def write_xml_childs(self, xml):
     self.write(self.xml_stringfy_childs(xml))
+  def insert_xml(self, xml,lineno):
+    level = self.determine_current_level(lineno)
+    string = self.xml_stringfy(xml,True,level-1)
+    self.insert(string.strip("\n"),lineno,True)
+  def insert_xml_childs(self, xml,lineno):
+    level = self.count_left_spaces(lineno)
+    string = self.xml_stringfy_childs(xml,True,level-1)
+    self.insert(string.strip("\n"),lineno,True)
+  def count_left_spaces(self,lineno):
+    line = self.buffer[lineno]
+    matches = re.match("^(\s*)",line)
+    if matches:
+      spaces = matches.group(1)
+      return len(spaces)
+    else:
+      return 0
+
 
 class StackWindow(VimWindow):
   def __init__(self, name = 'STACK_WINDOW'):
     VimWindow.__init__(self, name)
-  def xml_on_element(self, node):
+  def xml_on_element(self, node, insert):
     if node.nodeName != 'stack':
-      return VimWindow.xml_on_element(self, node)
+      return VimWindow.xml_on_element(self, node, insert)
     else:
       if node.getAttribute('where') != '{main}':
         fmark = '()'
@@ -305,107 +296,222 @@ class LogWindow(VimWindow):
   def __init__(self, name = 'LOG___WINDOW'):
     VimWindow.__init__(self, name)
   def on_create(self):
-    self.command('set nowrap fdm=marker fmr={{{,}}} fdl=0')
-    self.write('asdfasdf')
+    self.command('setlocal wrap fdm=marker fmr={{{,}}} fdl=0')
 
 class TraceWindow(VimWindow):
   def __init__(self, name = 'TRACE_WINDOW'):
     VimWindow.__init__(self, name)
-  def xml_on_element(self, node):
+    self.created = 0
+  def xml_on_element(self, node, insert):
     if node.nodeName != 'error':
-      return VimWindow.xml_on_element(self, node)
+      return VimWindow.xml_on_element(self, node, insert)
     else:
       desc = ''
       if node.hasAttribute('code'):
         desc = ' : '+error_msg[int(node.getAttribute('code'))]
-      return VimWindow.xml_on_element(self, node) + desc
+      return VimWindow.xml_on_element(self, node, insert) + desc
+  def create(self,method="new"):
+    self.created = 1
+    VimWindow.create(self,method)
+
+  def write(self,msg):
+    if self.created == 0:
+      self.create('rightbelow 1new')
+    VimWindow.write(self,msg)
+
   def on_create(self):
-    self.command('set nowrap fdm=marker fmr={{{,}}} fdl=0')
+    self.command('set wrap fdm=marker fmr={{{,}}} fdl=0')
+
+class CmdWindow(VimWindow):
+  def __init__(self, name = 'CMD_WINDOW'):
+    VimWindow.__init__(self, name)
+  def input(self, mode, arg = ''):
+    line = self.buffer[-1]
+    if line[:len(mode)+1] == '{'+mode+'}':
+      self.buffer[-1] = line + arg
+    else:
+      self.buffer.append('{'+mode+'} '+arg)
+  def get_command(self,latest = True):
+    if latest == True:
+      line = self.buffer[-1]
+    else:
+      (lnum, rol) = vim.current.window.cursor
+      line = self.buffer[lnum-1]
+    if line[0] == '#':
+      raise CmdInvalidError({"message":"Line is a comment, not a command"})
+    allowed_cmds = ["eval","property_get","property_insert","context_get","context_class","context_global","context_names"]
+    matches = re.match('^\{([^}]+)\}\s*(.*)$',line)
+    if matches:
+      if matches.group(1) in allowed_cmds:
+        return (matches.group(1),matches.group(2))
+      else:
+        raise CmdInvalidError({"message":"Not a command: "+matches.group(1)})
+    else:
+      raise CmdInvalidError({"message":"Unrecognised format for command line"})
+  def on_create(self):
+    self.command('set nowrap number fdm=marker fmr={{{,}}} fdl=0')
+    self.command('inoremap <buffer> <cr> <esc>:python debugger.watch_execute(False)<cr>')
+    self.command('nnoremap <buffer> <cr> <esc>:python debugger.watch_execute(False)<cr>')
+    self.write("# Choice of commands: \n\
+# {context_get}, {property_get} <property>, {eval} <expr>, \
+{context_global}, {context_class}\n#")
 
 class WatchWindow(VimWindow):
   def __init__(self, name = 'WATCH_WINDOW'):
     VimWindow.__init__(self, name)
-  def fixup_single(self, line, node, level):
-    return ''.ljust(level*1) + line + '\n'
-  def fixup_childs(self, line, node, level):
+    self.cline = None
+  def fixup_single(self, line, node, insert, level):
+    line = ''.ljust(level*1) + line
+    if len(line.strip()) > 0:
+      line += ";"
+      numchildren = node.getAttribute('children').decode('utf-8')
+      if len(numchildren) and int(numchildren) == 1:
+        line += " #>> press <CR> to expand"
+      line += "\n"
+    return line
+  def fixup_childs(self, line, node, insert, level):
     global z
     if len(node.childNodes)      == 1              and \
        (node.firstChild.nodeType == node.TEXT_NODE  or \
        node.firstChild.nodeType  == node.CDATA_SECTION_NODE):
       line = str(''.ljust(level*1) + line)
+      if node.getAttribute('name') == 'CLASSNAME':
+        return ""
       encoding = node.getAttribute('encoding')
       if encoding == 'base64':
-        line += "'" + base64.decodestring(str(node.firstChild.data)) + "';\n"
+        s = base64.decodestring(str(node.firstChild.data)).decode('utf-8') 
+        line += " '" + s.replace("'","\\'") + "'"
       elif encoding == '':
-        line += str(node.firstChild.data) + ';\n'
+        line += " "+str(node.firstChild.data).decode('utf-8')
       else:
-        line += '(e:'+encoding+') ' + str(node.firstChild.data) + ';\n'
+        line += '(e:'+encoding+') ' + str(node.firstChild.data).decode(encoding)
+      if len(line.strip()) > 0:
+        line += ';\n'
     else:
       if level == 0:
-        line = ''.ljust(level*1) + str(line) + ';' + '\n'
-        line += self.xml_stringfy_childs(node, level+1)
-        line += '/*}}}1*/\n'
+        if len(line.strip()) > 0:
+          line += ';\n'
+        line += self.xml_stringfy_childs(node, insert, level+1)
+        if len(line.strip()) > 0:
+          line += '\n'
       else:
-        line = (''.ljust(level*1) + str(line) + ';').ljust(self.width-20) + ''.ljust(level*1) + '/*{{{' + str(level+1) + '*/' + '\n'
-        line += str(self.xml_stringfy_childs(node, level+1))
-        line += (''.ljust(level*1) + ''.ljust(level*1)).ljust(self.width-20) + ''.ljust(level*1) + '/*}}}' + str(level+1) + '*/\n'
+        fold = False
+        if len(line.strip()) > 0:
+          fold = True
+          line = (''.ljust(level*1) + str(line) + ';')
+        child_str = self.xml_stringfy_childs(node, insert, level+1)
+        if len(child_str.strip()) > 0:
+          if fold:
+            line = line.ljust(self.width-20) + ''.ljust(level*1) + '/*{{{' + str(level) + '*/' + '\n'
+          line += child_str
+          if fold:
+            line += (''.ljust(level*1) + ''.ljust(level*1)).ljust(self.width-20) + ''.ljust(level*1) + '/*}}}' + str(level) + '*/'
+        else:
+          numchildren = node.getAttribute('children').decode('utf-8')
+          if len(numchildren) > 0 and int(numchildren) == 1:
+            line += " #>> press <CR> to expand"
+
+        line += '\n'
     return line
-  def xml_on_element(self, node):
+  def xml_on_element(self, node, insert):
     if node.nodeName == 'property':
       self.type = node.getAttribute('type')
+      extra = ""
+      classname = node.getAttribute('classname').decode('utf-8')
+      if classname != '':
+        extra = " "+classname
+      if self.type == "array":
+        extra = " ["+node.getAttribute('numchildren')+"]"
 
-      name      = node.getAttribute('name')
-      fullname  = node.getAttribute('fullname')
-      if name == '':
-        name = 'EVAL_RESULT'
-      if fullname == '':
-        fullname = 'EVAL_RESULT'
+      name      = node.getAttribute('name').decode('utf-8')
+      fullname  = node.getAttribute('fullname').decode('utf-8')
+      if name == 'CLASSNAME':
+        return ''
+      elif debugger.lastcmd == "eval":
+        name = self.get_eval_name(node,"")
+        fullname = name
 
       if self.type == 'uninitialized':
-        return str(('%-20s' % name) + " = /* uninitialized */'';")
+        return str(('%-20s' % fullname) + " = /* uninitialized */;")
+      elif self.type == 'null':
+        return str(('%-20s' % fullname) + " = (null)")
       else:
-        return str('%-20s' % fullname) + ' = (' + self.type + ') '
+        return str('%-20s' % fullname) + ' = (' + self.type + extra+')'
     elif node.nodeName == 'response':
-      return "$command = '" + node.getAttribute('command') + "'"
+      if insert == True:
+        return ''
+      else:
+        line = "// Command = " + node.getAttribute('command')
+        if debugger.lastcmd == 'eval':
+            line += "\n// Evaluating: "+debugger.lastarg
+        return line
     else:
-      return VimWindow.xml_on_element(self, node)
+      return VimWindow.xml_on_element(self, node, insert)
 
-  def xml_on_text(self, node):
+  def get_eval_name(self, node, name):
+    if node.parentNode.nodeName == "response":
+      return self.get_eval_arg()+name
+    else:
+      if node.parentNode.getAttribute('type') == 'object':
+        return self.get_eval_name(node.parentNode,"->"+node.getAttribute('name').decode('utf-8')+name)
+      else:
+        return self.get_eval_name(node.parentNode,"["+node.getAttribute('name').decode('utf-8')+"]"+name)
+
+  def get_eval_arg(self):
+    arg = debugger.lastarg
+    if arg.endswith(';'):
+      return arg[:-1]
+    return arg
+
+  def write_xml_childs(self,xml):
+    self.clean()
+    VimWindow.write_xml_childs(self,xml)
+
+  def xml_on_text(self, node, insert):
     if self.type == 'string':
       return "'" + str(node.data) + "'"
     else:
       return str(node.data)
-  def xml_on_cdata_section(self, node):
+  def xml_on_cdata_section(self, node, insert):
     if self.type == 'string':
       return "'" + str(node.data) + "'"
     else:
       return str(node.data)
-  def on_create(self):
+  def line_needs_children(self,lineno):
+    line = self.buffer[lineno]
+    match = re.search(r'\((array \[([0-9]+)\]|object)',line,re.M|re.I)
+    if match:
+      if match.group(1) == 'object':
+        if "{{{" in line:
+          return False
+        else:
+          return True
+      else:
+        if int(match.group(2)) > 0:
+          nlcnt = self.count_left_spaces(lineno+1) 
+          clcnt = self.count_left_spaces(lineno)
+          if nlcnt <= clcnt:
+            return True
+    return False
+  def expand(self):
+    (row, rol) = vim.current.window.cursor
+    if self.line_needs_children(row-1):
+      line = self.buffer[row-1]
+      self.cline = row-1
+      eqpos = line.find("=")
+      if eqpos > -1:
+        var = line[:eqpos].strip()
+        debugger.property_insert(var)
+      else:
+        self.command("echohl Error | echo \"Cannot find variable under cursor\" | echohl None")
+
+  def clean(self):
+    VimWindow.clean(self)
     self.write('<?')
-    self.command('inoremap <buffer> <cr> <esc>:python debugger.watch_execute()<cr>')
+  def on_create(self):
     self.command('set noai nocin')
-    self.command('set nowrap fdm=marker fmr={{{,}}} ft=php fdl=1')
-  def input(self, mode, arg = ''):
-    line = self.buffer[-1]
-    if line[:len(mode)+1] == '/*{{{1*/ => '+mode+':':
-      self.buffer[-1] = line + arg
-    else:
-      self.buffer.append('/*{{{1*/ => '+mode+': '+arg)
-    self.command('normal G')
-  def get_command(self):
-    line = self.buffer[-1]
-    if line[0:17] == '/*{{{1*/ => exec:':
-      print "exec does not supported by xdebug now."
-      return ('none', '')
-      #return ('exec', line[17:].strip(' '))
-    elif line[0:17] == '/*{{{1*/ => eval:':
-      return ('eval', line[17:].strip(' '))
-    elif line[0:25] == '/*{{{1*/ => property_get:':
-      return ('property_get', line[25:].strip(' '))
-    elif line[0:24] == '/*{{{1*/ => context_get:':
-      return ('context_get', line[24:].strip(' '))
-    else:
-      return ('none', '')
+    self.command('set nowrap fdm=marker fmr={{{,}}} ft=php fdl=1 foldlevel=1')
+    self.command('noremap <buffer> <cr> <esc>:python debugger.ui.watchwin.expand()<cr>')
 
 class HelpWindow(VimWindow):
   def __init__(self, name = 'HELP__WINDOW'):
@@ -417,8 +523,8 @@ class HelpWindow(VimWindow):
         '  <F2>   step into                |   ,e  eval            \n' + \
         '  <F3>   step over                |                       \n' + \
         '  <F4>   step out                 |                       \n' + \
-        '  <F5>   run                      | [ Command Mode ]      \n' + \
-        '  <F6>   quit debugging           | :Bp toggle breakpoint \n' + \
+        '  <F5>   start debuging & run     | [ Command Mode ]      \n' + \
+        '  <F6>   stop debugging           | :Bp toggle breakpoint \n' + \
         '                                  | :Up stack up          \n' + \
         '  <F11>  get all context          | :Dn stack down        \n' + \
         '  <F12>  get property at cursor   |                       \n' + \
@@ -427,27 +533,28 @@ class HelpWindow(VimWindow):
 
 class DebugUI:
   """ DEBUGUI class """
-  def __init__(self, minibufexpl = 0):
+  def __init__(self):
     """ initialize object """
     self.watchwin = WatchWindow()
     self.stackwin = StackWindow()
     self.tracewin = TraceWindow()
+    self.cmdwin   = CmdWindow()
     self.helpwin  = HelpWindow('HELP__WINDOW')
     self.mode     = 0 # normal mode
     self.file     = None
     self.line     = None
     self.winbuf   = {}
+    self.tabno    = None
     self.cursign  = None
     self.sessfile = "/tmp/debugger_vim_saved_session." + str(os.getpid())
-    self.minibufexpl = minibufexpl
 
   def debug_mode(self):
     """ change mode to debug """
     if self.mode == 1: # is debug mode ?
       return
     self.mode = 1
-    if self.minibufexpl == 1:
-      vim.command('CMiniBufExplorer')         # close minibufexplorer if it is open
+    vim.command('tabnew')
+    self.tabno = vim.eval('tabpagenr()')
     # save session
     vim.command('mksession! ' + self.sessfile)
     for i in range(1, len(vim.windows)+1):
@@ -455,12 +562,12 @@ class DebugUI:
       self.winbuf[i] = vim.eval('bufnr("%")') # save buffer number, mksession does not do job perfectly
                                               # when buffer is not saved at all.
 
-    vim.command('silent topleft new')                # create srcview window (winnr=1)
+    vim.command('silent leftabove new')                # create srcview window (winnr=1)
     for i in range(2, len(vim.windows)+1):
       vim.command(str(i)+'wincmd w')
       vim.command('hide')
     self.create()
-    vim.command('1wincmd w') # goto srcview window(nr=1, top-left)
+    vim.command('2wincmd w') # goto srcview window(nr=1, top-left)
     self.cursign = '1'
 
     self.set_highlight()
@@ -477,11 +584,16 @@ class DebugUI:
     self.destroy()
 
     # restore session
-    vim.command('source ' + self.sessfile)
+    "vim.command('source ' + self.sessfile)"
+    try:
+      vim.command('tabc! '+self.tabno)
+    except vim.error:
+      # Tab has already been closed?
+      print "UI error"
+
     os.system('rm -f ' + self.sessfile)
 
     self.set_highlight()
-
 
     self.winbuf.clear()
     self.file    = None
@@ -489,15 +601,13 @@ class DebugUI:
     self.mode    = 0
     self.cursign = None
 
-    if self.minibufexpl == 1:
-      vim.command('MiniBufExplorer')         # close minibufexplorer if it is open
-
   def create(self):
     """ create windows """
     self.watchwin.create('vertical belowright new')
-    self.helpwin.create('belowright new')
-    self.stackwin.create('belowright new')
-    self.tracewin.create('belowright new')
+    "self.helpwin.create('belowright new')"
+    self.stackwin.create('belowright 12new')
+    self.cmdwin.create('rightbelow 4new')
+    "self.tracewin.create('rightbelow 1new')"
 
   def set_highlight(self):
     """ set vim highlight of debugger sign """
@@ -506,17 +616,22 @@ class DebugUI:
 
   def destroy(self):
     """ destroy windows """
-    self.helpwin.destroy()
+    "self.helpwin.destroy()"
     self.watchwin.destroy()
     self.stackwin.destroy()
-    self.tracewin.destroy()
+    if self.tracewin.created == 1:
+      self.tracewin.destroy()
+    self.cmdwin.destroy()
   def go_srcview(self):
-    vim.command('1wincmd w')
+    vim.command('2wincmd w')
   def next_sign(self):
     if self.cursign == '1':
       return '2'
     else:
       return '1'
+  def rm_cursign(self):
+    vim.command('sign unplace ' + self.cursign)
+
   def set_srcview(self, file, line):
     """ set srcview windows to file:line and replace current sign """
 
@@ -541,20 +656,22 @@ class DebugUI:
 
 class DbgProtocol:
   """ DBGp Procotol class """
-  def __init__(self, port = 9000):
+  def __init__(self, port=9000):
     self.port     = port
     self.sock     = None
     self.isconned = 0
   def isconnected(self):
     return self.isconned
   def accept(self):
-    print 'waiting for a new connection on port '+str(self.port)+' for 5 seconds...'
+    print 'Waiting for a connection (this message will self-destruct in 30 seconds...)'
     serv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
       serv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+      serv.settimeout(30)
       serv.bind(('', self.port))
       serv.listen(5)
       (self.sock, address) = serv.accept()
+      self.sock.settimeout(None)
     except socket.timeout:
       serv.close()
       self.stop()
@@ -615,22 +732,66 @@ class BreakPoint:
     self.breakpt  = {}
     self.revmap   = {}
     self.startbno = 10000
+    self.types = ['line','exception','watch','call','return','conditional']
     self.maxbno   = self.startbno
+  def isType(self,type):
+    if type in self.types:
+      return True
+    else:
+      return False
   def clear(self):
     """ clear of breakpoint number """
     self.breakpt.clear()
     self.revmap.clear()
     self.maxbno = self.startbno
-  def add(self, file, line, exp = ''):
+  def parseArgs(self,args):
+    args = args.strip()
+    if len(args):
+      argWords = args.split()
+      #print argWords
+      expr = ""
+      if self.isType(argWords[0]):
+        if len(argWords) > 1:
+          exprWords = argWords[1:]
+          expr = " ".join(exprWords)
+        type = argWords[0]
+      else:
+        if len(argWords) > 0:
+          expr = " ".join(argWords)
+        type = "line"
+      return (type,expr)
+    else:
+      return ('line','')
+  def add(self, file, line, args = ''):
     """ add break point at file:line """
     self.maxbno = self.maxbno + 1
-    self.breakpt[self.maxbno] = { 'file':file, 'line':line, 'exp':exp, 'id':None }
+    parsedArgs = self.parseArgs(args)
+    #print parsedArgs
+    type = parsedArgs[0]
+    extra = ''
+    exp = ''
+    if type == 'line' or type == "conditional":
+      if file is None:
+        raise BreakpointError("Invalid file: cannot place breakpoint")
+      exp = parsedArgs[1]
+    else:
+      if len(parsedArgs) == 0:
+        raise BreakpointError("Breakpoint of type "+type+" requires an argument")
+      file = None
+      line = None
+      if type == "watch":
+        exp = parsedArgs[1]
+      else:
+        extra = parsedArgs[1]
+    self.breakpt[self.maxbno] = { 'file':file, 'line':line, 'exp':exp, 'extra':extra, 'id':None, 'type':type }
     return self.maxbno
   def remove(self, bno):
     """ remove break point numbered with bno """
     del self.breakpt[bno]
   def find(self, file, line):
     """ find break point and return bno(breakpoint number) """
+    if file is None or line is None:
+      return None
     for bno in self.breakpt.keys():
       if self.breakpt[bno]['file'] == file and self.breakpt[bno]['line'] == line:
         return bno
@@ -647,12 +808,46 @@ class BreakPoint:
   def getid(self, bno):
     """ get Debug Server's breakpoint numbered with bno """
     return self.breakpt[bno]['id']
+  def gettype(self, bno):
+    """ get Debug Server's breakpoint numbered with bno """
+    return self.breakpt[bno]['type']
+  def getcmd(self,bno):
+    bpt = self.breakpt[bno]
+    cmd = '-t '+bpt['type']
+    type = bpt['type']
+    if bpt['file']:
+      cmd += ' -f '+bpt['file']
+    if bpt['line']:
+      cmd += ' -n '+str(bpt['line'])
+    if type == "exception":
+      cmd += " -x "+bpt['extra']
+    elif type == "return" or type == "call":
+      cmd += " -m "+bpt['extra']
+    #print cmd
+    return cmd
+
   def setid(self, bno, id):
     """ get Debug Server's breakpoint numbered with bno """
     self.breakpt[bno]['id'] = id
   def list(self):
     """ return list of breakpoint number """
     return self.breakpt.keys()
+  def show(self):
+    if len(self.breakpt) == 0:
+      print "No breakpoints set\n"
+      return
+    print_str = "Breakpoints:\n"
+    for bno in self.list():
+      bp = self.breakpt[bno]
+      print_str += "[" + str(bno) + "] " + bp['type'] + ": "
+      if bp['type'] == 'line' or bp['type'] == 'conditional':
+        print_str += bp['file'] + ":" + str(bp['line'])
+      if bp['extra'] is not None:
+        print_str += bp['extra']
+      if len(bp['exp']) > 0:
+        print_str += " (condition: "+bp['exp']+")"
+      print_str += "\n"
+    print print_str
 
 class Debugger:
   """ Main Debugger class """
@@ -661,31 +856,29 @@ class Debugger:
   #################################################################################################################
   # Internal functions
   #
-  def __init__(self, port = 9000, max_children = '32', max_data = '1024', max_depth = '1', minibufexpl = '0', debug = 0):
+  def __init__(self, port = 9000, debug = 0, autoContext = 0):
     """ initialize Debugger """
-    socket.setdefaulttimeout(5)
-    self.port       = port
-    self.debug      = debug
+    socket.setdefaulttimeout(100)
+    self.port      = port
+    self.debug     = debug
+    self.autoContext = autoContext
 
-    self.current    = None
-    self.file       = None
-    self.lasterror  = None
-    self.msgid      = 0
-    self.running    = 0
-    self.stacks     = []
-    self.curstack   = 0
-    self.laststack  = 0
-    self.bptsetlst  = {} 
+    self.current   = None
+    self.file      = None
+    self.lasterror = None
+    self.msgid     = 0
+    self.running   = 0
+    self.stacks    = []
+    self.curstack  = 0
+    self.laststack = 0
+    self.bptsetlst = {} 
+    self.lastcmd = None
+    self.lastarg = None
 
-    self.status        = None
-    self.max_children  = max_children
-    self.max_data      = max_data
-    self.max_depth     = max_depth
+    self.protocol  = DbgProtocol(self.port)
 
-    self.protocol   = DbgProtocol(self.port)
-
-    self.ui         = DebugUI(minibufexpl)
-    self.breakpt    = BreakPoint()
+    self.ui        = DebugUI()
+    self.breakpt   = BreakPoint()
 
     vim.command('sign unplace *')
 
@@ -705,7 +898,7 @@ class Debugger:
     """ send message """
     self.protocol.send_msg(msg)
     # log message
-    if self.debug:
+    if self.debug == 1:
       self.ui.tracewin.write(str(self.msgid) + ' : send =====> ' + msg)
   def recv(self, count=10000):
     """ receive message until response is last transaction id or received count's message """
@@ -713,12 +906,12 @@ class Debugger:
       count = count - 1
       # recv message and convert to XML object
       txt = self.protocol.recv_msg()
-      res = xml.dom.minidom.parseString(txt)
+      res = xml.dom.minidom.parseString(txt.decode('utf-8'))
       # log messages {{{
-      if self.debug:
+      if self.debug == 1:
         self.ui.tracewin.write( str(self.msgid) + ' : recv <===== {{{   ' + txt)
         self.ui.tracewin.write('}}}')
-      # handle message
+      # handle message }}}
       self.handle_msg(res)
       # exit, if response's transaction id == last transaction id
       try:
@@ -728,11 +921,14 @@ class Debugger:
         pass
   def send_command(self, cmd, arg1 = '', arg2 = ''):
     """ send command (do not receive response) """
+    self.lastcmd = cmd
     self.msgid = self.msgid + 1
     line = cmd + ' -i ' + str(self.msgid)
     if arg1 != '':
       line = line + ' ' + arg1
+      self.lastarg = arg1
     if arg2 != '':
+      self.lastarg = arg2
       line = line + ' -- ' + base64.encodestring(arg2)[0:-1]
     self.send(line)
     return self.msgid
@@ -794,18 +990,26 @@ class Debugger:
   def handle_response_error(self, res):
     """ handle <error> tag """
     self.ui.tracewin.write_xml_childs(res)
-#    print 'ERROR!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
 #    print res.toprettyxml()
 #    print '------------------------------------'
 #
-#    errors  = res.getElementsByTagName('error')
+    errors  = res.getElementsByTagName('error')
 #    #print 'list: ', len(errors), errors
 #    if len(errors)>0:
 #      return
-#    for error in errors:
-#      code = error.getAttribute('code')
-#      print 'error code=', code
+    for error in errors:
+      code = int(error.getAttribute('code'))
+      vim.command('echohl Error | echo "'+error_msg[code].replace('"','')+'" | echohl None')
 #    print res
+
+  def handle_response_feature_set(self,res):
+    """<response command="feature_set"
+          feature="feature_name"
+          success="0|1"
+          transaction_id="transaction_id"/>"""
+    #featureName = res.firstChild.getAttribute('feature')
+    #featureSet = res.firstChild.getAttribute('success')
+    return
 
   def handle_response_stack_get(self, res):
     """handle <response command=stack_get> tag
@@ -837,8 +1041,6 @@ class Debugger:
     """handle <response command=step_out> tag
     <response command="step_out" reason="ok" status="break" transaction_id="1 "/>"""
     if res.firstChild.hasAttribute('reason') and res.firstChild.getAttribute('reason') == 'ok':
-      if res.firstChild.hasAttribute('status'):
-        self.status = res.firstChild.getAttribute('status')
       return
     else:
       print res.toprettyxml()
@@ -846,8 +1048,6 @@ class Debugger:
     """handle <response command=step_over> tag
     <response command="step_over" reason="ok" status="break" transaction_id="1 "/>"""
     if res.firstChild.hasAttribute('reason') and res.firstChild.getAttribute('reason') == 'ok':
-      if res.firstChild.hasAttribute('status'):
-        self.status = res.firstChild.getAttribute('status')
       return
     else:
       print res.toprettyxml()
@@ -855,17 +1055,15 @@ class Debugger:
     """handle <response command=step_into> tag
     <response command="step_into" reason="ok" status="break" transaction_id="1 "/>"""
     if res.firstChild.hasAttribute('reason') and res.firstChild.getAttribute('reason') == 'ok':
-      if res.firstChild.hasAttribute('status'):
-        self.status = res.firstChild.getAttribute('status')
       return
     else:
       print res.toprettyxml()
   def handle_response_run(self, res):
     """handle <response command=run> tag
     <response command="step_over" reason="ok" status="break" transaction_id="1 "/>"""
-    if res.firstChild.hasAttribute('status'):
-      self.status = res.firstChild.getAttribute('status')
-      return
+    pass
+  def handle_response_breakpoint_remove(self, res):
+      pass
   def handle_response_breakpoint_set(self, res):
     """handle <response command=breakpoint_set> tag
     <responsponse command="breakpoint_set" id="110180001" transaction_id="1"/>"""
@@ -880,19 +1078,35 @@ class Debugger:
       #  pass
   def handle_response_eval(self, res):
     """handle <response command=eval> tag """
+    if self.debug == 1:
+      self.ui.tracewin.write(res.toxml())
     self.ui.watchwin.write_xml_childs(res)
   def handle_response_property_get(self, res):
     """handle <response command=property_get> tag """
-    self.ui.watchwin.write_xml_childs(res)
+    cmd = self.ui.cmdwin.get_command()
+    if cmd[0] == "property_get":
+      self.ui.watchwin.write_xml_childs(res)
+    else:
+      self.ui.watchwin.insert_xml_childs(res,self.ui.watchwin.cline)
   def handle_response_context_get(self, res):
     """handle <response command=context_get> tag """
+    if self.debug == 1:
+      self.ui.tracewin.write(res.toxml())
     self.ui.watchwin.write_xml_childs(res)
-  def handle_response_feature_set(self, res):
-    """handle <response command=feature_set> tag """
-    self.ui.watchwin.write_xml_childs(res)
+  def handle_response_status(self, res):
+    if res.firstChild.hasAttribute('status'):
+      status = res.firstChild.getAttribute('status')
+      if status == 'stopping':
+          raise DBGPStoppingError("Debugger is shutting down")
+      elif status == 'stopped':
+          raise DBGPStoppedError("Debugger session has ended")
+      return
+    else:
+      print res.toprettyxml()
   def handle_response_default(self, res):
     """handle <response command=context_get> tag """
-    print res.toprettyxml()
+    if self.debug == 1:
+      self.ui.tracewin.write(res.toprettyxml())
   #
   #
   #################################################################################################################
@@ -920,9 +1134,12 @@ class Debugger:
   def run(self):
     """ start debugger or continue """
     if self.protocol.isconnected():
+      self.ui.rm_cursign()
       self.command('run')
-      if self.status != 'stopped':
-        self.command('stack_get')
+      self.command('status')
+      self.command('stack_get')
+      if self.autoContext:
+        self.command('context_get', ('-d %d' % self.curstack))
     else:
       self.clear()
       self.protocol.accept()
@@ -931,17 +1148,13 @@ class Debugger:
 
       self.recv(1)
 
-      # set max data to get with eval results
-      self.command('feature_set', '-n max_children -v ' + self.max_children)
-      self.command('feature_set', '-n max_data -v ' + self.max_data)
-      self.command('feature_set', '-n max_depth -v ' + self.max_depth)
-
+      self.set_max_depth(2)
       self.command('step_into')
 
       flag = 0
       for bno in self.breakpt.list():
         msgid = self.send_command('breakpoint_set', \
-                                  '-t line -f ' + self.breakpt.getfile(bno) + ' -n ' + str(self.breakpt.getline(bno)) + ' -s enabled', \
+                                  self.breakpt.getcmd(bno), \
                                   self.breakpt.getexp(bno))
         self.bptsetlst[msgid] = bno
         flag = 1
@@ -953,7 +1166,6 @@ class Debugger:
   def quit(self):
     self.ui.normal_mode()
     self.clear()
-    #vim.command('MiniBufExplorer')
 
   def stop(self):
     self.clear()
@@ -970,7 +1182,7 @@ class Debugger:
       self.ui.stackwin.highlight_stack(self.curstack)
       self.ui.set_srcview(self.stacks[self.curstack]['file'], self.stacks[self.curstack]['line'])
 
-  def mark(self, exp = ''):
+  def mark(self, args = ''):
     (row, rol) = vim.current.window.cursor
     file       = vim.current.buffer.name
 
@@ -983,42 +1195,82 @@ class Debugger:
         self.send_command('breakpoint_remove', '-d ' + str(id))
         self.recv()
     else:
-      bno = self.breakpt.add(file, row, exp)
-      vim.command('sign place ' + str(bno) + ' name=breakpt line=' + str(row) + ' file=' + file)
+      bno = self.breakpt.add( file, row, args)
+      type = self.breakpt.gettype(bno)
+      if type == "line" or type == "conditional":
+        vim.command('sign place ' + str(bno) + ' name=breakpt line=' + str(row) + ' file=' + file)
       if self.protocol.isconnected():
         msgid = self.send_command('breakpoint_set', \
-                                  '-t line -f ' + self.breakpt.getfile(bno) + ' -n ' + str(self.breakpt.getline(bno)), \
+                                  self.breakpt.getcmd(bno), \
                                   self.breakpt.getexp(bno))
         self.bptsetlst[msgid] = bno
         self.recv()
 
+  def unmark(self, bno = None):
+    if bno is None:
+      for bno in self.breakpt.list():
+        self.remove_breakpoint(bno)
+    else:
+      if bno in self.breakpt.breakpt:
+        self.remove_breakpoint(bno)
+
+  def remove_breakpoint(self,bno):
+    bp = self.breakpt.breakpt[bno]
+    if bp['id'] is not None and self.protocol.isconnected():
+      self.send_command('breakpoint_remove',"-d "+str(bp['id']))
+    if bp['type'] == "line" or bp['type'] == "conditional":
+      vim.command('sign unplace ' + str(bno))
+    self.breakpt.remove(bno)
+    print "Removed "+bp['type']+" breakpoint "+str(bno)
+
   def watch_input(self, mode, arg = ''):
-    self.ui.watchwin.input(mode, arg)
+    self.ui.cmdwin.input(mode, arg)
+    self.ui.cmdwin.command('normal G')
+
+  def set_max_depth(self,depth):
+    self.command('feature_set','-n max_depth -v '+str(depth))
 
   def property_get(self, name = ''):
     if name == '':
       name = vim.eval('expand("<cword>")')
-    self.ui.watchwin.write('--> property_get: '+name)
+    self.ui.cmdwin.write('{property_get} '+name)
     self.command('property_get', '-n '+name)
     
-  def watch_execute(self):
+  def property_insert(self, name = ''):
+    if name == '':
+      name = vim.eval('expand("<cword>")')
+    self.ui.cmdwin.write('{property_insert} '+name)
+    self.command('property_get', '-d 0 -n '+name)
+
+  def watch_execute(self,latest = True):
     """ execute command in watch window """
-    (cmd, expr) = self.ui.watchwin.get_command()
+    try:
+      (cmd, expr) = self.ui.cmdwin.get_command(latest)
+    except CmdInvalidError, e:
+      msg = str(e.args[0]['message'])
+      vim.command('echohl Error | echo "'+msg+'" |echohl None')
+      return
+
     if cmd == 'exec':
       self.command('exec', '', expr)
       print cmd, '--', expr
     elif cmd == 'eval':
       self.command('eval', '', expr)
-      print cmd, '--', expr
+      print "Evaluating expression: ", expr
     elif cmd == 'property_get':
       self.command('property_get', '-d %d -n %s' % (self.curstack,  expr))
-      print cmd, '-n ', expr
+      print "Getting property: ", expr
     elif cmd == 'context_get':
       self.command('context_get', ('-d %d' % self.curstack))
-      print cmd
-    else:
-      print "no commands", cmd, expr
-
+      print "Getting current context with depth ",str(self.curstack)
+    elif cmd == 'context_global':
+      self.command('context_get', ('-d %d -c 1' % self.curstack))
+      print "Getting global variables in current context"
+    elif cmd == 'context_class':
+      self.command('context_get', ('-d %d -c 2' % self.curstack))
+      print "Getting current context with class variables"
+    elif cmd == 'context_names':
+      self.command('context_names',('-d %d' % self.curstack))
 
   #
   #
@@ -1028,45 +1280,33 @@ class Debugger:
 
 #################################################################################################################
 #
-# Try - Catch Wrapper 
+# Try - Catch Warpper 
 #
 #################################################################################################################
 
 
-def debugger_init(debug = 0):
+def debugger_init():
   global debugger
-
-  # get needed vim variables
-
-  # port that the engine will connect on
-  port = int(vim.eval('debuggerPort'))
-  if port == 0:
-    port = 9000
-
-  # the max_depth variable to set in the engine
-  max_children = vim.eval('debuggerMaxChildren')
-  if max_children == '':
-    max_children = '32'
-
-  max_data = vim.eval('debuggerMaxData')
-  if max_data == '':
-    max_data = '1024'
-
-  max_depth = vim.eval('debuggerMaxDepth')
-  if max_depth == '':
-    max_depth = '1'
-
-  minibufexpl = int(vim.eval('debuggerMiniBufExpl'))
-  if minibufexpl == 0:
-    minibufexpl = 0
-
-  debugger  = Debugger(port, max_children, max_data, max_depth, minibufexpl, debug)
+  port = int(vim.eval("g:debuggerPort"))
+  debug = int(vim.eval("g:debuggerDebugMode"))
+  autoContext = int(vim.eval("g:debuggerAutoContext"))
+  #print "Listening on port "+str(port)+", debug mode = "+str(debug)
+  debugger  = Debugger(port, debug, autoContext)
 
 def debugger_command(msg, arg1 = '', arg2 = ''):
   try:
     debugger.command(msg, arg1, arg2)
-    if debugger.status != 'stopped':
-      debugger.command('stack_get')
+    debugger.command('stack_get')
+    if debugger.autoContext:
+      debugger.command('context_get')
+  except DBGPStoppedError:
+    debugger.stop()
+    print 'Debugger has shut down', sys.exc_info()
+  except DBGPStoppingError:
+    debugger.stop()
+    print 'Debugger is shutting down', sys.exc_info()
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write(sys.exc_info())
     debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
@@ -1076,26 +1316,81 @@ def debugger_command(msg, arg1 = '', arg2 = ''):
 def debugger_run():
   try:
     debugger.run()
+  except DBGPStoppedError:
+    debugger.stop()
+    print 'Debugger has shut down'
+  except DBGPStoppingError:
+    debugger.stop()
+    print 'Debugger is shutting down'
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write(sys.exc_info())
     debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
     debugger.stop()
     print 'Connection closed, stop debugging', sys.exc_info()
 
+def debugger_visual_eval():
+    selection = vim.eval("xdebug:get_visual_selection()")
+    debugger_watch_input('eval',selection)
+
 def debugger_watch_input(cmd, arg = ''):
   try:
     if arg == '<cword>':
       arg = vim.eval('expand("<cword>")')
     debugger.watch_input(cmd, arg)
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write( sys.exc_info() )
     debugger.ui.tracewin.write( "".join(traceback.format_tb(sys.exc_info()[2])) )
     debugger.stop()
     print 'Connection closed, stop debugging'
 
+def debugger_globals():
+  try:
+    debugger.ui.cmdwin.write('{context_global}')
+    debugger.watch_execute()
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
+  except:
+    debugger.ui.tracewin.write(sys.exc_info())
+    debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
+    debugger.stop()
+    print 'Connection closed, stop debugging'
 def debugger_context():
   try:
+    debugger.ui.cmdwin.write('{context_get}')
     debugger.command('context_get')
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
+  except:
+    debugger.ui.tracewin.write(sys.exc_info())
+    debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
+    debugger.stop()
+    print 'Connection closed, stop debugging'
+
+def debugger_cmd(cmd):
+  try:
+    debugger.ui.cmdwin.write('{'+cmd+'}')
+    debugger.watch_execute(True)
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
+  except:
+    debugger.ui.tracewin.write(sys.exc_info())
+    debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
+    debugger.stop()
+    print 'Connection closed, stop debugging'
+
+def debugger_set_depth(depth):
+  try:
+    depth = int(depth)
+    if depth > 0:
+      debugger.set_max_depth(depth)
+    else:
+      print "Invalid maximum depth"
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write(sys.exc_info())
     debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
@@ -1104,16 +1399,52 @@ def debugger_context():
 
 def debugger_property(name = ''):
   try:
-    debugger.property_get()
+    debugger.property_get(name)
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write(sys.exc_info())
     debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
     debugger.stop()
     print 'Connection closed, stop debugging', sys.exc_info()
 
-def debugger_mark(exp = ''):
+def debugger_mark(args = ''):
   try:
-    debugger.mark(exp)
+    debugger.mark(args)
+  except BreakpointError, e:
+    msg = str(e.args[0])
+    vim.command('echohl Error | echo "'+msg+'" |echohl None')
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
+  except:
+    debugger.ui.tracewin.write(sys.exc_info())
+    debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
+    debugger.stop()
+    print 'Connection closed, stop debugging', sys.exc_info()
+
+def debugger_list_breakpoints():
+  try:
+    if debugger.breakpt:
+      debugger.breakpt.show()
+  except BreakpointError, e:
+    msg = str(e.args[0])
+    vim.command('echohl Error | echo "'+msg+'" |echohl None')
+
+def debugger_remove_breakpoint(bno = ''):
+  try:
+    if len(bno):
+      try:
+        bno = int(bno)
+      except ValueError:
+        bno = None
+    else:
+      bno = None
+    debugger.unmark(bno)
+  except BreakpointError, e:
+    msg = str(e.args[0])
+    vim.command('echohl Error | echo "'+msg+'" |echohl None')
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write(sys.exc_info())
     debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
@@ -1123,6 +1454,8 @@ def debugger_mark(exp = ''):
 def debugger_up():
   try:
     debugger.up()
+  except EOFError:
+    vim.command('echohl Error | echo "Debugger socket closed" | echohl None')
   except:
     debugger.ui.tracewin.write(sys.exc_info())
     debugger.ui.tracewin.write("".join(traceback.format_tb( sys.exc_info()[2])))
@@ -1156,6 +1489,17 @@ def debugger_resize():
   if mode == 2:
     vim.command("wincmd _")
 
+class DBGPStoppingError(Exception):
+    pass
+
+class DBGPStoppedError(Exception):
+    pass
+
+class CmdInvalidError(Exception):
+  pass
+
+class BreakpointError(Exception):
+  pass
 error_msg = { \
     # 000 Command parsing errors
     0   : """no error""",                                                                                                                                                      \
